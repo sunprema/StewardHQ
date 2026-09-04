@@ -9,13 +9,21 @@ defmodule Steward.Application do
   def start(_type, _args) do
     children = [
       StewardWeb.Telemetry,
+      Steward.Registry,
+      Steward.ResourceServerSupervisor,
       Steward.Repo,
       {DNSCluster, query: Application.get_env(:steward, :dns_cluster_query) || :ignore},
+      {Oban,
+       AshOban.config(
+         Application.fetch_env!(:steward, :ash_domains),
+         Application.fetch_env!(:steward, Oban)
+       )},
       {Phoenix.PubSub, name: Steward.PubSub},
       # Start a worker by calling: Steward.Worker.start_link(arg)
       # {Steward.Worker, arg},
       # Start to serve requests, typically the last entry
-      StewardWeb.Endpoint
+      StewardWeb.Endpoint,
+      {AshAuthentication.Supervisor, [otp_app: :steward]}
     ]
 
     # See https://elixir.hexdocs.pm/Supervisor.html

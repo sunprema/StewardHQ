@@ -1,4 +1,8 @@
 import Config
+config :steward, Oban, testing: :manual
+config :steward, token_signing_secret: "EjROllqn11W8nh9g+/sl4kLT5Z8YxOby"
+config :bcrypt_elixir, log_rounds: 1
+config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 
 # Configure your database
 #
@@ -9,7 +13,7 @@ config :steward, Steward.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "steward_test#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "stewardhq_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 

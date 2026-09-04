@@ -1,11 +1,12 @@
 import Config
+config :ash, policies: [show_policy_breakdowns?: true]
 
 # Configure your database
 config :steward, Steward.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "steward_dev",
+  database: "stewardhq_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -53,7 +54,7 @@ config :steward, StewardWeb.Endpoint,
 # different ports.
 
 # Enable dev routes for dashboard and mailbox
-config :steward, dev_routes: true
+config :steward, dev_routes: true, token_signing_secret: "Ws2Da60CiuviKVkNDDXbN9ge1J2G2xN+"
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
