@@ -11,6 +11,7 @@ defmodule Steward.Application do
       StewardWeb.Telemetry,
       Steward.Registry,
       Steward.ResourceServerSupervisor,
+      Steward.LeaseProviderSupervisor,
       Steward.Repo,
       {DNSCluster, query: Application.get_env(:steward, :dns_cluster_query) || :ignore},
       {Oban,

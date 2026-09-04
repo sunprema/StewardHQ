@@ -1,5 +1,5 @@
 Technical Specification: StewardHQ
-Version: 2.2 Concept: A Stewardship Runtime — safe custody of business resources in agentic systems Stack: Elixir, Ash Framework, Spark DSL, OTP (BEAM), Reactor Elixir namespace: Steward.\*
+Version: 2.3 Concept: A Stewardship Runtime — safe custody of business resources in agentic systems Stack: Elixir, Ash Framework, Spark DSL, OTP (BEAM), Reactor Elixir namespace: Steward.\*
 
 1. Executive Summary
    StewardHQ is a Resource Governance Gateway built on a single idea: a steward is someone entrusted with the management of another's property. AI agents should never own business resources — invoices, orders, money, customer data. StewardHQ holds custody on the enterprise's behalf and grants agents temporary, bounded stewardship: the right to act on a resource, under explicit obligations, for a limited time.
@@ -92,9 +92,16 @@ Failures are structured, never bare 403s:
 {:error, :capability_expired}
 {:error, :capability_moved}
 {:error, :unborrowed_access}
+{:error, :unfenced_write}
+{:error, :lease_expired}
 {:error, :stale_resource, remote_state}
 {:error, :irreversible_before_fallible, step_id}
 Structured errors let agents recover autonomously: they explain why, not just no.
+
+(v2.3 addendum, Phase 2: :unfenced_write covers a mutating call reaching the backend boundary with
+no lease/fencing token in context — the write-side analogue of :unborrowed_access. :lease_expired
+covers a §3.2 lease whose TTL or hard renewal ceiling has passed; it is distinct from
+:capability_expired, which applies to §3.1 capability tokens.)
 
 5. System Architecture
    [Agent] --(Plan)--> [StewardHQ Gateway (Elixir/Ash)] --(Fenced, leased action)--> [Legacy API]

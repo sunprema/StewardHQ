@@ -69,7 +69,7 @@ config :spark,
 config :steward,
   ecto_repos: [Steward.Repo],
   generators: [timestamp_type: :utc_datetime],
-  ash_domains: [Steward.Accounts]
+  ash_domains: [Steward.Accounts, Steward.Shadows]
 
 # Configure the endpoint
 config :steward, StewardWeb.Endpoint,

@@ -1,0 +1,5 @@
+{
+  "source_of_truth": "main",
+  "explainer_branch": "explainer",
+  "verifier_model": ""
+}
