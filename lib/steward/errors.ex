@@ -12,7 +12,7 @@ defmodule Steward.Errors do
   the Steward call-site boundary.
   """
 
-  alias Steward.Errors.{LeaseExpired, StaleResource, UnfencedWrite}
+  alias Steward.Errors.{LeaseExpired, StaleResource, UnborrowedAccess, UnfencedWrite}
 
   @doc """
   Extracts the spec §4.4 flat error tuple from an `Ash.Error.Invalid`
@@ -21,11 +21,13 @@ defmodule Steward.Errors do
   one of ours.
   """
   @spec reason(Ash.Error.Invalid.t() | struct()) ::
-          {:error, :unfenced_write}
+          {:error, :unborrowed_access}
+          | {:error, :unfenced_write}
           | {:error, :lease_expired}
           | {:error, :stale_resource, map()}
           | {:error, :invalid, term()}
   def reason(%Ash.Error.Invalid{errors: [first | _rest]}), do: reason(first)
+  def reason(%UnborrowedAccess{}), do: {:error, :unborrowed_access}
   def reason(%UnfencedWrite{}), do: {:error, :unfenced_write}
   def reason(%LeaseExpired{}), do: {:error, :lease_expired}
 

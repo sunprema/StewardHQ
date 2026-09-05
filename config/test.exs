@@ -4,6 +4,10 @@ config :steward, token_signing_secret: "EjROllqn11W8nh9g+/sl4kLT5Z8YxOby"
 config :bcrypt_elixir, log_rounds: 1
 config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 
+# Test-only domain exercising the Steward.Resource DSL (Phase 3) end to
+# end, on top of the app's real domains.
+config :steward, ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Test.Examples]
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
