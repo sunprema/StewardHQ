@@ -1,5 +1,5 @@
 Technical Specification: StewardHQ
-Version: 2.3 Concept: A Stewardship Runtime — safe custody of business resources in agentic systems Stack: Elixir, Ash Framework, Spark DSL, OTP (BEAM), Reactor Elixir namespace: Steward.\*
+Version: 2.4 Concept: A Stewardship Runtime — safe custody of business resources in agentic systems Stack: Elixir, Ash Framework, Spark DSL, OTP (BEAM), Reactor Elixir namespace: Steward.\*
 
 1. Executive Summary
    StewardHQ is a Resource Governance Gateway built on a single idea: a steward is someone entrusted with the management of another's property. AI agents should never own business resources — invoices, orders, money, customer data. StewardHQ holds custody on the enterprise's behalf and grants agents temporary, bounded stewardship: the right to act on a resource, under explicit obligations, for a limited time.
@@ -37,7 +37,33 @@ A plan is a graph of awaitable steps (Reactor model):
 
 Steps declare run, compensate (retryable failure), and undo (rollback of a completed step because a later one failed).
 Cancellation is structured: every in-flight step receives the cancel signal, awaits its compensation, then drops its borrows.
-No capability outlives its plan. Sub-agents are supervised tasks scoped to the plan; orphans are impossible. This scoped-lifetime invariant is enforced by the BEAM, not by convention. 4. Four Guarantees, Four Mechanisms
+No capability outlives its plan. Sub-agents are supervised tasks scoped to the plan; orphans are impossible. This scoped-lifetime invariant is enforced by the BEAM, not by convention.
+
+3.4 channel — Typed Transport for Capability Movement (v2.4 addendum)
+Not a fourth primitive — own, lease(ttl), and await_step remain the three foundations. A channel is the concrete, typed transport those primitives run over whenever a capability or task crosses an agent-process boundary: spawn_agent's capability move, a supervisor delegating a sub-task, or two peer agents coordinating a hand-off. Where §3.1 says a moved capability is consumed at the sender, a channel says how that move is carried, bounded, and observed.
+
+defmodule MyApp.Protocols.Billing do
+use Steward.Channel
+
+  channel :payment_processing do
+    capacity 50
+    overflow :block, timeout: 5_000   # bounded — never an infinite block
+
+    message :charge_request, schema: Billing.ChargeRequest   # an Ash embedded resource
+    message :charge_completed, schema: Billing.ChargeResult
+
+    allow_delegation [:read_customer, :write_invoice]  # capability names from §6's DSL
+    require_intent true
+  end
+end
+
+A message never invents authority. allow_delegation may only name capabilities the declaring resource already grants per §6 — a channel can't manufacture a right a Steward.Resource capability block didn't declare. Receiving write_invoice over a channel doesn't skip the borrow/lease/fencing path (§4.1/§4.2); it only lets the receiver request it with a capability it didn't originally hold. The Witness Pattern and EnforceFencing still gate the actual write.
+Delegation is own, not a new token type. What might look like a new "Authority Witness" is the existing linear capability token from §3.1, riding as a message payload — no new token kind.
+spawn_agent is a channel with one message. Phase 5's spawn_agent(name, moves: [caps]) is the degenerate case: capacity 1, one :task message, no reply expected. Framing it this way gives sub-agent spawning the same backpressure/typing/expiry machinery for free instead of a bespoke path.
+Oneshot delegation reuses :shared/:exclusive borrow semantics, scoped to one request/response cycle instead of a plan: the channel watches for the paired reply and returns the capability on receipt, or on the delegate's process death (the same Process.monitor-based auto-release CLAUDE.md already mandates) — not a second release mechanism.
+Overflow is bounded. overflow :block always carries a timeout (no infinite receive); exceeding it, or overflow :reject, surfaces {:error, :channel_full}.
+
+4. Four Guarantees, Four Mechanisms
 The guarantees are deliberately kept as separable mechanisms — each protects against a different adversary.
 
 Guarantee Mechanism Protects agents from
@@ -96,12 +122,21 @@ Failures are structured, never bare 403s:
 {:error, :lease_expired}
 {:error, :stale_resource, remote_state}
 {:error, :irreversible_before_fallible, step_id}
+{:error, :channel_full}
+{:error, :channel_closed}
+{:error, :intent_required}
 Structured errors let agents recover autonomously: they explain why, not just no.
 
 (v2.3 addendum, Phase 2: :unfenced_write covers a mutating call reaching the backend boundary with
 no lease/fencing token in context — the write-side analogue of :unborrowed_access. :lease_expired
 covers a §3.2 lease whose TTL or hard renewal ceiling has passed; it is distinct from
 :capability_expired, which applies to §3.1 capability tokens.)
+
+(v2.4 addendum, §3.4 channels: :channel_full covers a bounded channel rejecting a send — overflow
+policy :reject, or :block past its timeout. :channel_closed covers a send targeting a channel whose
+owning plan/agent has already terminated. :intent_required covers a message arriving without a
+Purpose when the channel declares require_intent true. A delegation that times out mid-flight needs
+no new atom — that is already {:error, :capability_expired} from §3.1.)
 
 5. System Architecture
    [Agent] --(Plan)--> [StewardHQ Gateway (Elixir/Ash)] --(Fenced, leased action)--> [Legacy API]
@@ -187,11 +222,12 @@ Plan Validator: state-machine simulation, freshness checks, reversibility orderi
 Phase 4 — Saga Execution
 Reactor integration: run / compensate / undo per step; plan-scoped borrows; capability disposition by error type.
 Durable saga state in Ash; persistent retry queue; dead-letter escalation to humans.
-Phase 5 — Capability Movement & MCP Facade
-spawn_agent(name, moves: [caps]) — supervised, plan-scoped sub-agent tasks.
-Enforcement of the scoped-lifetime invariant: no capability outlives its plan.
-MCP server facade: each tool call wrapped as a witnessed, leased, fenced single-step plan.
-Designed-for but deferred: wound-wait deadlock arbitration for session mode, webhook/CDC ingestion, full DSL surface, provider behaviours (§9).
+Phase 5 — Capability Movement & MCP Facade (revised, v2.4: §3.4 channels)
+Steward.Channel — Spark DSL extension compiling channel blocks (capacity, typed messages, allow_delegation, require_intent) into bounded, GenServer-backed mailboxes.
+spawn_agent(name, moves: [caps]) reimplemented as a degenerate one-message Steward.Channel — supervised, plan-scoped sub-agent tasks (deliverable unchanged from v2.3, now channel-backed).
+Scoped-lifetime invariant extended: no capability outlives its channel — a channel's supervisor tears down outstanding delegations (auto-return or drop, per §4.3 disposition rules) when the channel closes.
+MCP server facade: each tool call wrapped as a witnessed, leased, fenced single-step plan (unchanged from v2.3).
+Designed-for but deferred: wound-wait deadlock arbitration for session mode, webhook/CDC ingestion, full DSL surface, provider behaviours (§9), and the Channel/Authority-Graph observability dashboard — a UI feature, out of v1's billing-wedge scope per this section's "no premature abstraction."
 
 9. Extensibility Strategy (v2+)
    Following the Rust/Tokio split: StewardHQ owns the language; runtimes are swappable behaviours. Extraction happens only after v1's concrete implementation proves where the real seams are.
