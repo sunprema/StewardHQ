@@ -22,6 +22,8 @@ The bet is that this needs to be **structural**, not advisory: an agent (or a ca
 - **Sagas with real rollback.** Plans run as a graph of steps, each with a `run`, a `compensate` (retryable failure), and an `undo` (rollback because a *later* step failed). The plan validator refuses to even schedule a plan that puts an irreversible step (like "send an email") before a step that might still fail.
 - **Structured, legible errors.** Failures come back as `{:error, :stale_resource, remote_state}` or `{:error, :capability_moved}` — never a bare exception or a `false` — so an agent (or the person debugging it) can tell *why* something didn't work and what its options are.
 
+See [`docs/examples.md`](docs/examples.md) for a few concrete scenarios these mechanisms are meant for — paying an invoice, cancelling an order, a supervisor agent delegating approval to a sub-agent.
+
 If you want the full design rationale and the complete guarantee-by-guarantee breakdown, read [`docs/tech_spec.md`](docs/tech_spec.md) — it's the authoritative spec for this project, and code that disagrees with it is considered a bug in one of the two.
 
 ## Rust inspirations
