@@ -1,6 +1,18 @@
 import Config
 config :ash, policies: [show_policy_breakdowns?: true]
 
+# docs/cookbook.md's dev-only, runnable worked examples — see
+# Steward.Cookbook.PaymentGateway's moduledoc for why this is confined
+# to dev by config alone, never test or prod.
+config :steward,
+  ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Sagas, Steward.Cookbook]
+
+config :steward, Steward.MCP.Facade,
+  resources: [
+    {Steward.Cookbook.Invoice, state_attribute: :status},
+    {Steward.Cookbook.Order, state_attribute: :status}
+  ]
+
 # Configure your database
 config :steward, Steward.Repo,
   username: "postgres",
