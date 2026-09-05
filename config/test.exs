@@ -9,6 +9,11 @@ config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 config :steward,
   ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Sagas, Steward.Test.Examples]
 
+# Exercises Steward.MCP.Facade end to end against the same test resource
+# Phase 3/4's own test suites already use.
+config :steward, Steward.MCP.Facade,
+  resources: [{Steward.Test.Examples.Invoice, state_attribute: :status}]
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used

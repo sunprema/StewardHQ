@@ -22,6 +22,17 @@ defmodule StewardWeb.Router do
     plug :set_actor, :user
   end
 
+  pipeline :mcp do
+    plug :accepts, ["json"]
+  end
+
+  # StewardHQ as an MCP server (docs/tech_spec.md §8; Steward.MCP.Facade)
+  # — no :browser plugs, this is a JSON-RPC endpoint, not a page.
+  scope "/mcp" do
+    pipe_through :mcp
+    forward "/", Hermes.Server.Transport.StreamableHTTP.Plug, server: Steward.MCP.Facade
+  end
+
   scope "/", StewardWeb do
     pipe_through :browser
 

@@ -81,6 +81,7 @@ defmodule Steward.MixProject do
       {:picosat_elixir, "~> 0.2"},
       {:sourceror, "~> 1.8", only: [:dev, :test]},
       {:oban, "~> 2.0"},
+      {:hermes_mcp, "~> 0.14"},
       {:usage_rules, "~> 1.0", only: [:dev]},
       {:ash_cloak, "~> 0.4"},
       {:cloak, "~> 1.0"},

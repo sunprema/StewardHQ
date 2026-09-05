@@ -15,6 +15,8 @@ defmodule Steward.Application do
       Steward.CapabilityRegistry,
       Steward.ChannelServerSupervisor,
       {Task.Supervisor, name: Steward.SpawnAgent.TaskSupervisor},
+      Hermes.Server.Registry,
+      {Steward.MCP.Facade, transport: :streamable_http},
       Steward.Repo,
       {DNSCluster, query: Application.get_env(:steward, :dns_cluster_query) || :ignore},
       {Oban,

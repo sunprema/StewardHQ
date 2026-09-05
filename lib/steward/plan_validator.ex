@@ -40,14 +40,20 @@ defmodule Steward.PlanValidator do
   extension. `:action` is the capability/action name being exercised.
   `:observed_at` is when the agent last observed this resource's shadow
   state — required only when the matching capability declares a
-  `requires_freshness` bound.
+  `requires_freshness` bound. `:args`/`:undo_args`/`:compensate_args` are
+  opaque, passed straight through to the action `Steward.Sagas.ActionDispatcher`
+  (or its undo/compensate counterpart) dispatches to — this validator
+  never inspects them.
   """
   @type step :: %{
           required(:id) => term(),
           required(:resource) => module(),
           required(:resource_id) => term(),
           required(:action) => atom(),
-          optional(:observed_at) => DateTime.t()
+          optional(:observed_at) => DateTime.t(),
+          optional(:args) => map(),
+          optional(:undo_args) => map(),
+          optional(:compensate_args) => map()
         }
 
   @type error ::

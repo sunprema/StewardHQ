@@ -71,6 +71,10 @@ config :steward,
   generators: [timestamp_type: :utc_datetime],
   ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Sagas]
 
+# No resources exposed by default — see Steward.MCP.Facade's moduledoc:
+# what an agent can call is a deliberate operator decision per app.
+config :steward, Steward.MCP.Facade, resources: []
+
 # Configure the endpoint
 config :steward, StewardWeb.Endpoint,
   url: [host: "localhost"],

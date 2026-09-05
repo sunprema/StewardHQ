@@ -61,6 +61,7 @@ Steward.Resource        — the Spark DSL where a resource's safety rules are de
 Steward.PlanValidator   — checks a plan before it's allowed to run (ordering, freshness, deadlock avoidance)
 Steward.SagaExecutor    — runs plans as Reactor sagas: run / compensate / undo
 Steward.Changes.EnforceFencing — the Ash change that makes an unfenced write impossible to express
+Steward.MCP.Facade      — StewardHQ as an MCP server: one tool per capability, each call proxied through the above
 ```
 
 ## Where the project is
@@ -71,7 +72,7 @@ This is being built one phase at a time, on purpose — later phases aren't star
 - ✅ **Phase 2 — Leases, Fencing & Idempotency**: lease lifecycle, fencing tokens, drift detection and repair.
 - ✅ **Phase 3 — DSL & Plan Validation**: the `Steward.Resource` DSL, witness enforcement, and the static plan validator.
 - ✅ **Phase 4 — Saga Execution**: Reactor-backed plans with compensation/undo and durable saga state.
-- 🟡 **Phase 5 — Capability Movement & Channels**: linear capability moves, the `Steward.Channel` DSL, and channel-backed sub-agent spawning are done and tested. The MCP server facade (exposing StewardHQ's safety runtime as a set of MCP tools) is still to come.
+- ✅ **Phase 5 — Capability Movement, Channels & MCP Facade**: linear capability moves, the `Steward.Channel` DSL, channel-backed sub-agent spawning, and `Steward.MCP.Facade` — StewardHQ exposed as an MCP server, one tool per declared capability, each call still fully proxied through the real borrow/lease/fencing/saga machinery (see [`docs/examples.md`](docs/examples.md)).
 
 See [`CLAUDE.md`](CLAUDE.md) for the invariants every change has to hold, and the phase-by-phase build order.
 
