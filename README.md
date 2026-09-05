@@ -12,13 +12,7 @@ StewardHQ's answer: don't trust agents with resources, and don't rely on the age
 
 **Agents propose; the steward disposes.** An agent never gets direct access to an invoice, an order, or a payment. It gets *temporary, bounded stewardship* of one — a lease with an expiry, a capability that's consumed the moment it's used, a plan that either completes in full or gets unwound step by step. StewardHQ is the thing standing between the agent and the real API, and it is the only path either of them has to get there.
 
-This is deliberately inspired by Rust's ownership model, applied to business resources instead of memory:
-
-- **One holder at a time.** A resource has exactly one exclusive holder, or several shared readers — never both. Handing off rights *moves* them; it never quietly copies them.
-- **Locks are leases, not promises.** Every lock has a time limit and a fencing token. Expiry is normal, not an edge case — and a write that shows up after the lease expired is rejected by the backend itself, not just by convention.
-- **Plans are transactional.** A multi-step agent plan either lands completely or unwinds through compensation/undo steps. Nothing is left half-done.
-
-The bet is that this needs to be **structural**, not advisory: an agent (or a careless engineer writing internal code) shouldn't be able to bypass the safety by accident. There is no code path to the real API that skips the borrow check, the lease, or the fencing token.
+The bet is that this needs to be **structural**, not advisory: an agent (or a careless engineer writing internal code) shouldn't be able to bypass the safety by accident. There is no code path to the real API that skips the borrow check, the lease, or the fencing token. (See below for where this idea actually comes from.)
 
 ## What that looks like in practice
 
@@ -29,6 +23,18 @@ The bet is that this needs to be **structural**, not advisory: an agent (or a ca
 - **Structured, legible errors.** Failures come back as `{:error, :stale_resource, remote_state}` or `{:error, :capability_moved}` — never a bare exception or a `false` — so an agent (or the person debugging it) can tell *why* something didn't work and what its options are.
 
 If you want the full design rationale and the complete guarantee-by-guarantee breakdown, read [`docs/tech_spec.md`](docs/tech_spec.md) — it's the authoritative spec for this project, and code that disagrees with it is considered a bug in one of the two.
+
+## Rust inspirations
+
+None of this runs through Rust or its compiler — StewardHQ is Elixir top to bottom. What it borrows is the *mindset*, applied to business resources instead of memory, and enforced at runtime instead of compile time (there's no compiler to lean on for "did anyone already pay this invoice," so an OTP process plays that role instead):
+
+- **Ownership, not shared references.** Rust's borrow checker won't let two mutable references coexist. StewardHQ won't let two agents hold conflicting rights to the same resource at once — `Steward.ResourceServer` is a runtime rewrite of "one writer or many readers, never both," arbitrated by a process instead of a compiler.
+- **Move semantics, not aliasing.** Handing a capability to a sub-agent is a Rust `move`, not a `clone`: `Steward.CapabilityRegistry.move/2` permanently invalidates the sender's copy the instant it mints the receiver's. Try to reuse the old one and you get `{:error, :capability_moved}` — the same class of bug Rust's compiler rejects at compile time, caught here at call time instead.
+- **Scoped lifetime, via the BEAM instead of the stack.** Rust drops a value automatically when its scope ends. StewardHQ ties a borrow's lifetime to a *process* instead of a lexical scope: `Process.monitor` guarantees a borrow is released the instant its holder returns, crashes, or is killed — it never depends on the agent remembering to clean up after itself.
+- **Locks as leases, not mutex guards.** A Rust `Mutex` guard is held until it's dropped; a StewardHQ lease is held until it's released *or* its timer runs out, whichever comes first. That extra ceiling exists because an LLM-driven holder can stall indefinitely in a way a thread never does, and the system has to survive that.
+- **A safety language with a swappable runtime.** Rust ships the `Future` trait and lets an executor like Tokio supply the actual scheduling. StewardHQ tries to draw the same line: the safety semantics — what a borrow, a lease, and a capability *mean* — are meant to stay fixed, while which backend actually holds the lock, persists saga state, or talks to a given API is meant to be pluggable behind a behaviour. In practice this split is still mostly aspirational: v1 hardcodes a GenServer lock provider and Ash/Postgres persistence, and the pluggable-provider behaviours are deliberately deferred until there's more than one real backend to prove the interface against.
+
+Worth saying plainly where the analogy breaks down: Rust catches its violations at *compile time*, before the program ever runs. StewardHQ can't — an LLM agent's "illegal state" isn't knowable until runtime, so every one of these checks surfaces as an enforced runtime failure (`{:error, :capability_moved}`, `{:error, :unborrowed_access}`) rather than a compiler error. The goal was never to reproduce Rust's mechanics; it's to reproduce its outcome — states that are simply impossible to reach by accident — using the tools available to a system that has to supervise long-running, unpredictable agents instead of compiling a fixed program once.
 
 ## How it's built
 
