@@ -25,7 +25,7 @@ defmodule Steward.Test.Examples.Invoice do
     ownership(:account_id)
 
     capability(:read, mode: :shared)
-    capability(:approve, mode: :exclusive, reversibility: :undoable)
+    capability(:approve, mode: :exclusive, reversibility: :undoable, undo: :unapprove)
 
     capability(:pay,
       mode: :exclusive,
@@ -62,11 +62,22 @@ defmodule Steward.Test.Examples.Invoice do
       change set_attribute(:status, :approved)
     end
 
+    update :unapprove do
+      accept []
+      change set_attribute(:status, :draft)
+    end
+
     update :pay do
       argument :amount_paid, :decimal, allow_nil?: false
 
       change set_attribute(:status, :paid)
       change set_attribute(:amount_paid, arg(:amount_paid))
+    end
+
+    update :refund do
+      accept []
+      change set_attribute(:status, :approved)
+      change set_attribute(:amount_paid, Decimal.new(0))
     end
 
     action :notify, :atom do

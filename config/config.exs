@@ -12,7 +12,7 @@ config :ash_oban, pro?: false
 config :steward, Oban,
   engine: Oban.Engines.Basic,
   notifier: Oban.Notifiers.Postgres,
-  queues: [default: 10],
+  queues: [default: 10, saga_retry: 5],
   lifeline: [rescue_after: {2, :hours}],
   pruner: [max_age: {1, :day}],
   repo: Steward.Repo,
@@ -69,7 +69,7 @@ config :spark,
 config :steward,
   ecto_repos: [Steward.Repo],
   generators: [timestamp_type: :utc_datetime],
-  ash_domains: [Steward.Accounts, Steward.Shadows]
+  ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Sagas]
 
 # Configure the endpoint
 config :steward, StewardWeb.Endpoint,

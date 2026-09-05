@@ -82,18 +82,30 @@ defmodule Steward.PlanValidator do
   """
   @spec canonical_borrow_order([step()]) :: [{String.t(), :shared | :exclusive}]
   def canonical_borrow_order(steps) do
+    Enum.map(canonical_borrow_targets(steps), fn {key, mode} -> {borrow_key(key), mode} end)
+  end
+
+  @doc """
+  Like `canonical_borrow_order/1`, but keeps each `{resource,
+  resource_id}` pair instead of flattening it to a display string — what
+  `Steward.SagaExecutor` actually calls `Steward.ResourceServer.acquire/3`
+  with. `canonical_borrow_order/1` is this with the pair replaced by its
+  display string.
+  """
+  @spec canonical_borrow_targets([step()]) :: [{{module(), term()}, :shared | :exclusive}]
+  def canonical_borrow_targets(steps) do
     steps
-    |> Enum.group_by(&borrow_key/1)
+    |> Enum.group_by(&{&1.resource, &1.resource_id})
     |> Enum.map(fn {key, group} ->
       mode =
         if Enum.any?(group, &(capability_mode(&1) == :exclusive)), do: :exclusive, else: :shared
 
       {key, mode}
     end)
-    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.sort_by(fn {key, _mode} -> borrow_key(key) end)
   end
 
-  defp borrow_key(step), do: "#{inspect(step.resource)}:#{step.resource_id}"
+  defp borrow_key({resource, resource_id}), do: "#{inspect(resource)}:#{resource_id}"
 
   defp capability_mode(step) do
     case ResourceInfo.capability(step.resource, step.action) do

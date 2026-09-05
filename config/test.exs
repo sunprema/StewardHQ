@@ -6,7 +6,8 @@ config :ash, policies: [show_policy_breakdowns?: true], disable_async?: true
 
 # Test-only domain exercising the Steward.Resource DSL (Phase 3) end to
 # end, on top of the app's real domains.
-config :steward, ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Test.Examples]
+config :steward,
+  ash_domains: [Steward.Accounts, Steward.Shadows, Steward.Sagas, Steward.Test.Examples]
 
 # Configure your database
 #
