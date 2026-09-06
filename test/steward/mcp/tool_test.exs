@@ -9,15 +9,22 @@ defmodule Steward.MCP.ToolTest do
   use ExUnit.Case, async: true
 
   alias Steward.MCP.Tool
+  alias Steward.Test.Borrows
   alias Steward.Test.Examples
   alias Steward.Test.Examples.Invoice
 
   defp account_id, do: Ecto.UUID.generate()
 
   defp create_invoice!(total \\ Decimal.new(100)) do
-    Examples.create_invoice!(account_id(), total,
-      context: %{steward: %{borrow_token: make_ref()}}
-    )
+    Borrows.creating(Invoice, fn witness ->
+      Examples.create_invoice!(account_id(), total, context: witness)
+    end)
+  end
+
+  defp approve_invoice!(invoice) do
+    Borrows.witnessed(Invoice, invoice.id, fn witness ->
+      Examples.approve_invoice!(invoice, context: witness)
+    end)
   end
 
   describe "name/2" do
@@ -69,7 +76,7 @@ defmodule Steward.MCP.ToolTest do
 
     test "reflects a state change already made outside this call" do
       invoice = create_invoice!()
-      Examples.approve_invoice!(invoice, context: %{steward: %{borrow_token: make_ref()}})
+      approve_invoice!(invoice)
 
       assert Tool.initial_states(Invoice, :pay, invoice.id, :status) == %{
                {Invoice, invoice.id} => :approved

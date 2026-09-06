@@ -13,15 +13,16 @@ defmodule Steward.SagaExecutorTest do
 
   alias Steward.SagaExecutor
   alias Steward.Sagas
+  alias Steward.Test.Borrows
   alias Steward.Test.Examples
   alias Steward.Test.Examples.Invoice
 
   defp account_id, do: Ecto.UUID.generate()
 
   defp create_invoice!(total \\ Decimal.new(100)) do
-    Examples.create_invoice!(account_id(), total,
-      context: %{steward: %{borrow_token: make_ref()}}
-    )
+    Borrows.creating(Invoice, fn witness ->
+      Examples.create_invoice!(account_id(), total, context: witness)
+    end)
   end
 
   defp last_saga!,

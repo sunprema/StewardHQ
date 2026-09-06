@@ -13,6 +13,17 @@ defmodule Steward.Cookbook.Warehouse do
   recipe reliably demonstrate a saga rolling back an already-succeeded
   step (the refund) because a *later* step (the restock) failed, on
   demand rather than by chance.
+
+  ## Deliberately `idempotency :none`
+
+  Unlike `Steward.Cookbook.PaymentGateway`, this backend accepts
+  `opts[:idempotency_key]` and ignores it. That is not an oversight:
+  plenty of legacy systems have no idempotency semantics at all, and
+  spec §4.2 has a different answer for them — "the fallback is a
+  deep-sync repair step... poll the backend's read endpoint to determine
+  what actually happened." Keeping one of the cookbook's two backends
+  honest about that gives `Steward.RepairLoop` something real to be the
+  answer to.
   """
 
   @behaviour Steward.Backend
@@ -21,7 +32,7 @@ defmodule Steward.Cookbook.Warehouse do
   @failures_table :steward_cookbook_warehouse_failures
 
   @doc """
-  Makes the next `write/4` call against `resource_id` fail with
+  Makes the next `write/5` call against `resource_id` fail with
   `{:error, reason}` instead of actually writing — consumed on use, so
   the call after that one succeeds normally.
   """
@@ -40,7 +51,7 @@ defmodule Steward.Cookbook.Warehouse do
   end
 
   @impl true
-  def write(resource_id, changes, _fencing_token, expected_version) do
+  def write(resource_id, changes, _fencing_token, expected_version, _opts) do
     ensure_tables()
 
     case :ets.take(@failures_table, resource_id) do

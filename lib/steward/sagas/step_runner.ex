@@ -15,6 +15,16 @@ defmodule Steward.Sagas.StepRunner do
   Every action call carries that resource's plan-scoped `borrow_token`
   witness, plus a fresh, step-scoped `Steward.LeaseProvider` lease for
   mutating actions — fencing is per-write (spec §3.2), unlike borrowing.
+  Both are keyed `{resource, resource_id}`, so a lease and a borrow always
+  describe the same thing and resources sharing an id never collide.
+
+  It also carries this step's `Steward.Idempotency.step_key/2` — derived
+  from `{saga_id, step.id}`, so every retry of a step sends the key its
+  first attempt sent, whether the retry happens in this process
+  (`compensate/4` returning `:retry`) or in a later one via
+  `Steward.SagaExecutor.resume/1`. That is what makes a retry after an
+  ambiguous backend failure safe rather than a second payment
+  (spec §4.2).
 
   ## Capability disposition (CLAUDE.md invariant 3)
 
@@ -56,7 +66,7 @@ defmodule Steward.Sagas.StepRunner do
   use Reactor.Step
 
   alias Ash.Resource.Info, as: AshInfo
-  alias Steward.{LeaseProvider, Sagas}
+  alias Steward.{Idempotency, LeaseProvider, Sagas}
   alias Steward.Resource.Info, as: StewardInfo
   alias Steward.Sagas.ActionDispatcher
 
@@ -110,7 +120,10 @@ defmodule Steward.Sagas.StepRunner do
         :ok
 
       {action, args} ->
-        undo_step = Map.merge(step, %{action: action, args: args})
+        # A distinct step id, so the reversal carries its own idempotency
+        # key: a refund is a *new* write, not a replay of the payment it
+        # reverses, and must never be deduplicated against it.
+        undo_step = Map.merge(step, %{action: action, args: args, id: undo_id(step, action)})
 
         case dispatch(undo_step, opts) do
           {:ok, _result} ->
@@ -150,12 +163,18 @@ defmodule Steward.Sagas.StepRunner do
     context = build_context(step, opts)
 
     if mutating?(step) do
-      case LeaseProvider.acquire(step.resource_id) do
+      # Leases are keyed exactly like borrows — `{resource, resource_id}`,
+      # not the bare id. Two resources sharing an id (sequential integers,
+      # or the same uuid mirrored across shadows) would otherwise contend
+      # for one lease server and see spurious `{:error, :lease_held}`.
+      key = borrow_key(step)
+
+      case LeaseProvider.acquire(key) do
         {:ok, lease} ->
           try do
             fun.(put_in(context, [:steward, :lease], lease))
           after
-            LeaseProvider.release(step.resource_id, lease.ref)
+            LeaseProvider.release(key, lease.ref)
           end
 
         {:error, :lease_held} ->
@@ -167,9 +186,16 @@ defmodule Steward.Sagas.StepRunner do
   end
 
   defp build_context(step, opts) do
-    borrow_token = Map.fetch!(opts[:borrow_tokens], {step.resource, step.resource_id})
-    %{steward: %{borrow_token: borrow_token}}
+    borrow_token = Map.fetch!(opts[:borrow_tokens], borrow_key(step))
+
+    borrow_token
+    |> Steward.witness()
+    |> put_in([:steward, :idempotency_key], Idempotency.step_key(opts[:saga_id], step.id))
   end
+
+  defp borrow_key(step), do: {step.resource, step.resource_id}
+
+  defp undo_id(step, action), do: "#{step.id}:undo:#{action}"
 
   defp mutating?(step) do
     case AshInfo.action(step.resource, step.action) do

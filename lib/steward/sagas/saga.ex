@@ -20,6 +20,11 @@ defmodule Steward.Sagas.Saga do
   once `:attempts` reaches the retry ceiling, not by Oban's own
   job-retry mechanism — a saga step failing is an expected, structured
   outcome (spec §4.4), not an exception for Oban to catch.
+
+  `:retry` marks the row `:running` and commits; the actual re-execution
+  happens after that commit, in `Steward.Sagas.Saga.Changes.Resume` —
+  see that module for why a saga must never run inside the transaction
+  that schedules it.
   """
 
   use Ash.Resource,
@@ -102,7 +107,7 @@ defmodule Steward.Sagas.Saga do
       change set_attribute(:status, :running)
       change set_attribute(:error, nil)
       change set_attribute(:finished_at, nil)
-      change after_action(fn _changeset, saga, _context -> resume(saga) end)
+      change Steward.Sagas.Saga.Changes.Resume
     end
   end
 
@@ -126,12 +131,5 @@ defmodule Steward.Sagas.Saga do
 
     create_timestamp :inserted_at
     update_timestamp :updated_at
-  end
-
-  defp resume(saga) do
-    case Steward.SagaExecutor.resume(saga) do
-      {:ok, _result} -> {:ok, saga}
-      {:error, _reason} -> {:ok, saga}
-    end
   end
 end

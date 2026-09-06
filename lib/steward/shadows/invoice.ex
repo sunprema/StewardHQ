@@ -11,12 +11,34 @@ defmodule Steward.Shadows.Invoice do
   cache: `version` (the backend's ETag) and `sync_status` (`:synced |
   :stale | :conflicted`), plus `synced_at` to compute staleness age when
   needed.
+
+  ## Backend selection
+
+  The `Steward.Backend` this resource fences against is configuration,
+  not a hardcoded module:
+
+      config :steward, Steward.Shadows.Invoice, backend: MyApp.RealBackend
+
+  It has to be. This resource is registered in the application's
+  `:ash_domains` in every environment, so naming a module that only
+  exists under `elixirc_paths(:test)` — as this previously named
+  `Steward.Test.FakeBackend` — compiles fine and then raises
+  `UndefinedFunctionError` the first time `record_payment` runs outside
+  the test suite. `Application.compile_env!/2` turns that class of
+  mistake into a compile error instead, and makes the choice explicit at
+  the one place an operator would look for it.
   """
 
   use Ash.Resource,
     otp_app: :steward,
     domain: Steward.Shadows,
     data_layer: AshPostgres.DataLayer
+
+  # Read in module-body context (not inside the DSL block) so it is
+  # unambiguously a compile-time read: `Application.compile_env!/2` may
+  # only be called from a module body, and this way the recompile
+  # dependency is registered no matter how Spark expands `actions do`.
+  @backend Application.compile_env!(:steward, [__MODULE__, :backend])
 
   postgres do
     table "shadow_invoices"
@@ -43,7 +65,7 @@ defmodule Steward.Shadows.Invoice do
         )
       end
 
-      change {Steward.Changes.EnforceFencing, backend: Steward.Test.FakeBackend}
+      change {Steward.Changes.EnforceFencing, backend: @backend}
     end
   end
 

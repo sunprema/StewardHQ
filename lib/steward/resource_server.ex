@@ -15,6 +15,22 @@ defmodule Steward.ResourceServer do
   tier that stops StewardHQ's own agents from requesting conflicting
   leases against each other. Backend lease acquisition (the authoritative
   tier) is Phase 2.
+
+  ## Borrow tokens are checkable, not merely presentable
+
+  Every granted borrow is recorded in `Steward.BorrowRegistry` against the
+  pid it was granted to, and `verify_borrow/2` is what
+  `Steward.Resource.Validations.RequireWitness` calls to decide whether a
+  `borrow_token` in changeset context is real. A token is therefore not a
+  bearer credential: it is only honoured for the process that acquired it,
+  and only while that borrow is still held. This is what makes spec §4.1's
+  "there is no opt-out path at the resource layer" true of forged tokens
+  and not just of missing ones.
+
+  Borrows intended to witness an Ash action must be acquired on a
+  `{resource_module, resource_id}` key — `verify_borrow/2` checks the
+  module against the resource being acted on, so a borrow on one resource
+  can never witness an action on another.
   """
 
   use GenServer
@@ -79,19 +95,50 @@ defmodule Steward.ResourceServer do
   runs, but this resource server's `Process.monitor` on the caller
   releases the borrow independently, so release is guaranteed either way.
   """
-  @spec borrow(term(), :shared | :exclusive, (-> result)) :: result | {:error, :timeout}
+  @spec borrow(term(), :shared | :exclusive, (-> result) | (reference() -> result)) ::
+          result | {:error, :timeout}
         when result: var
-  def borrow(resource_id, mode, fun) when is_function(fun, 0) do
+  def borrow(resource_id, mode, fun) when is_function(fun, 0) or is_function(fun, 1) do
     case acquire(resource_id, mode) do
       {:ok, borrow_ref} ->
         try do
-          fun.()
+          if is_function(fun, 1), do: fun.(borrow_ref), else: fun.()
         after
           release(resource_id, borrow_ref)
         end
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  @doc """
+  Checks that `borrow_token` is a *live* borrow held by `holder_pid`,
+  granted on `resource` (spec §4.1's Witness Pattern; CLAUDE.md
+  invariant 1).
+
+  This is the check that makes a `borrow_token` a witness rather than a
+  password. It answers three questions, all of which must hold:
+
+    1. Was this token ever issued, and is the borrow still held? A
+       released, timed-out, or fabricated token fails.
+    2. Is the process presenting it the process it was granted to? A
+       token cannot be passed to another process to launder access.
+    3. Was the borrow taken on *this* resource? Borrows witnessing an
+       Ash action must be acquired on a `{resource_module, resource_id}`
+       key; a borrow on some other resource cannot witness this one.
+
+  Returns `{:error, :unborrowed_access}` — never a boolean — so callers
+  propagate the spec §4.4 taxonomy unchanged.
+  """
+  @spec verify_borrow(term(), module(), pid()) ::
+          {:ok, Steward.BorrowRegistry.entry()} | {:error, :unborrowed_access}
+  def verify_borrow(borrow_token, resource, holder_pid \\ self()) do
+    with {:ok, %{holder: ^holder_pid, key: {^resource, _resource_id}} = entry} <-
+           Steward.BorrowRegistry.fetch(borrow_token) do
+      {:ok, entry}
+    else
+      _unheld_or_mismatched -> {:error, :unborrowed_access}
     end
   end
 
@@ -131,6 +178,7 @@ defmodule Steward.ResourceServer do
     case take_holder(state, borrow_ref) do
       {:ok, monitor_ref, state} ->
         Process.demonitor(monitor_ref, [:flush])
+        :ok = Steward.BorrowRegistry.unregister(borrow_ref)
         state = %{state | monitors: Map.delete(state.monitors, monitor_ref)}
         {:reply, :ok, grant_from_queue(state)}
 
@@ -156,6 +204,7 @@ defmodule Steward.ResourceServer do
         {:noreply, state}
 
       {{borrow_ref, mode}, monitors} ->
+        :ok = Steward.BorrowRegistry.unregister(borrow_ref)
         state = %{state | monitors: monitors}
 
         state =
@@ -194,13 +243,24 @@ defmodule Steward.ResourceServer do
   defp do_grant(state, mode, holder_pid) do
     borrow_ref = make_ref()
     monitor_ref = Process.monitor(holder_pid)
+    holder = %{monitor_ref: monitor_ref, holder: holder_pid, mode: mode}
     state = %{state | monitors: Map.put(state.monitors, monitor_ref, {borrow_ref, mode})}
 
     state =
       case mode do
-        :shared -> %{state | shared: Map.put(state.shared, borrow_ref, monitor_ref)}
-        :exclusive -> %{state | exclusive: {borrow_ref, monitor_ref}}
+        :shared -> %{state | shared: Map.put(state.shared, borrow_ref, holder)}
+        :exclusive -> %{state | exclusive: {borrow_ref, holder}}
       end
+
+    # Registered from *this* process (the granting resource server), so the
+    # entry's lifetime is tied to the borrow, not to the holder — release
+    # and DOWN both unregister explicitly below.
+    :ok =
+      Steward.BorrowRegistry.register(borrow_ref, %{
+        key: state.resource_id,
+        mode: mode,
+        holder: holder_pid
+      })
 
     {borrow_ref, state}
   end
@@ -208,12 +268,12 @@ defmodule Steward.ResourceServer do
   defp take_holder(state, borrow_ref) do
     cond do
       Map.has_key?(state.shared, borrow_ref) ->
-        {monitor_ref, shared} = Map.pop(state.shared, borrow_ref)
-        {:ok, monitor_ref, %{state | shared: shared}}
+        {holder, shared} = Map.pop(state.shared, borrow_ref)
+        {:ok, holder.monitor_ref, %{state | shared: shared}}
 
-      match?({^borrow_ref, _monitor_ref}, state.exclusive) ->
-        {_borrow_ref, monitor_ref} = state.exclusive
-        {:ok, monitor_ref, %{state | exclusive: nil}}
+      match?({^borrow_ref, _holder}, state.exclusive) ->
+        {_borrow_ref, holder} = state.exclusive
+        {:ok, holder.monitor_ref, %{state | exclusive: nil}}
 
       true ->
         :error

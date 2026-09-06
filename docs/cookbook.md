@@ -22,10 +22,16 @@ alias Hermes.Server.Frame
 
 {:ok, frame} = Facade.init(%{}, Frame.new())
 
+# Creating the invoice is itself a stewarded action, so it needs a real
+# borrow: `Steward.witness/1` wraps the token the borrow hands you, and
+# the borrow is released as soon as the function returns — well before the
+# tool calls below acquire their own.
 invoice =
-  Cookbook.create_invoice!("acme-inv-1001", Ecto.UUID.generate(), Decimal.new(500),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Invoice, :new}, :exclusive, fn token ->
+    Cookbook.create_invoice!("acme-inv-1001", Ecto.UUID.generate(), Decimal.new(500),
+      context: Steward.witness(token)
+    )
+  end)
 
 {:reply, _approved, frame} =
   Facade.handle_tool_call("approve_invoice", %{"resource_id" => invoice.id}, frame)
@@ -69,9 +75,11 @@ Cancelling an order is a three-step plan, not one action: refund the payment, re
 
 ```elixir
 order =
-  Cookbook.create_order!("acme-ord-2002", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Order, :new}, :exclusive, fn token ->
+    Cookbook.create_order!("acme-ord-2002", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
+      context: Steward.witness(token)
+    )
+  end)
 
 plan = [
   %{id: Ash.UUID.generate(), resource: Cookbook.Order, resource_id: order.id, action: :refund, observed_at: DateTime.utc_now()},
@@ -89,9 +97,11 @@ That's the happy path — refund and restock both went through the (simulated) w
 
 ```elixir
 order =
-  Cookbook.create_order!("acme-ord-2003", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Order, :new}, :exclusive, fn token ->
+    Cookbook.create_order!("acme-ord-2003", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
+      context: Steward.witness(token)
+    )
+  end)
 
 Steward.Cookbook.Warehouse.simulate_failure(order.external_id, :out_of_stock)
 
@@ -130,9 +140,11 @@ alias Hermes.Server.Frame
 {:ok, frame} = Facade.init(%{}, Frame.new())
 
 invoice =
-  Cookbook.create_stripe_invoice!("acme-stripe-1001", Ecto.UUID.generate(), Decimal.new(500),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.StripeInvoice, :new}, :exclusive, fn token ->
+    Cookbook.create_stripe_invoice!("acme-stripe-1001", Ecto.UUID.generate(), Decimal.new(500),
+      context: Steward.witness(token)
+    )
+  end)
 
 {:reply, _approved, frame} =
   Facade.handle_tool_call("approve_stripe_invoice", %{"resource_id" => invoice.id}, frame)
@@ -155,7 +167,9 @@ That `stripe_payment_intent_id` is a real object id, handed back by a real HTTP 
 
 ### The honest limit of this recipe
 
-`stripe-mock` validates shape, not state — verified by hand while building this: POST a value in `metadata` on create, immediately re-fetch the same object by id, and it comes back empty. Nothing round-trips. So the one thing `write/4` exists to prove — "does the backend reject a write whose expected version already drifted" — can't be demonstrated by `stripe-mock`'s own responses here, the way Recipe 1's "two concurrent payments" race genuinely can. `Steward.Cookbook.StripeGateway` keeps that check exactly where Recipe 1's gateway keeps it: a small local table standing in for "what we last knew the backend to hold." What this recipe actually proves is narrower and still real: the adapter's HTTP-facing shape — the request, the idempotency header, the response parsing — holds up against something that looks like Stripe's real API, not just a friendly fake.
+`stripe-mock` validates shape, not state — verified by hand while building this: POST a value in `metadata` on create, immediately re-fetch the same object by id, and it comes back empty. Nothing round-trips. So the one thing `write/5` exists to prove — "does the backend reject a write whose expected version already drifted" — can't be demonstrated by `stripe-mock`'s own responses here, the way Recipe 1's "two concurrent payments" race genuinely can. `Steward.Cookbook.StripeGateway` keeps that check exactly where Recipe 1's gateway keeps it: a small local table standing in for "what we last knew the backend to hold." What this recipe actually proves is narrower and still real: the adapter's HTTP-facing shape — the request, the idempotency header, the response parsing — holds up against something that looks like Stripe's real API, not just a friendly fake.
+
+The `Idempotency-Key` header carries the saga step's own key (`Steward.Idempotency.step_key/2`), derived once from `{saga_id, step_id}` and therefore identical on every retry of that step — including a retry that arrives minutes later via `Steward.SagaExecutor.resume/1`, in a different process, after the original attempt's process died. It is emphatically *not* the fencing token, which changes with every new lease by design: sending that as the idempotency key would mean the retry after an ambiguous timeout presented Stripe with a key it had never seen, and the customer paid twice.
 
 ## Connecting a real MCP client
 

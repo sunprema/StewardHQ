@@ -13,13 +13,14 @@ defmodule Steward.Sagas.SagaRetryTest do
 
   alias Steward.SagaExecutor
   alias Steward.Sagas
+  alias Steward.Test.Borrows
   alias Steward.Test.Examples
   alias Steward.Test.Examples.Invoice
 
   defp create_invoice! do
-    Examples.create_invoice!(Ecto.UUID.generate(), Decimal.new(100),
-      context: %{steward: %{borrow_token: make_ref()}}
-    )
+    Borrows.creating(Invoice, fn witness ->
+      Examples.create_invoice!(Ecto.UUID.generate(), Decimal.new(100), context: witness)
+    end)
   end
 
   # A plan naming an action that doesn't exist passes static validation

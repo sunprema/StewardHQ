@@ -5,6 +5,12 @@ defmodule Steward.SpawnAgentTest do
   supervised sub-agent task, and CLAUDE.md invariant 4 ("no capability
   outlives its plan... process death must release borrows automatically")
   applied to that child.
+
+  The `plan-scoped lifetime` block is the invariant-violation half: it
+  kills the spawning process *while the sub-agent's task is still
+  running*, which is the case a child that watched its parent only
+  before starting work would miss entirely — and would miss for as long
+  as the task ran, which for an agent task has no bound.
   """
 
   use ExUnit.Case, async: true
@@ -58,6 +64,68 @@ defmodule Steward.SpawnAgentTest do
     assert_receive {:DOWN, ^ref, :process, ^child_pid, _reason}, 1_000
 
     assert wait_until(fn -> CapabilityRegistry.status(moved) == :expired end)
+  end
+
+  describe "plan-scoped lifetime (invariant 4)" do
+    test "a sub-agent does not outlive its spawning process, even mid-task" do
+      test_pid = self()
+
+      {:ok, capability} =
+        CapabilityRegistry.issue(Invoice, {:test, make_ref()}, :read, consumption: :reusable)
+
+      parent =
+        spawn(fn ->
+          {:ok, child} =
+            SpawnAgent.spawn_agent(:long_running,
+              moves: [capability],
+              task: fn [moved] ->
+                send(test_pid, {:task_running, moved})
+                Process.sleep(:infinity)
+              end
+            )
+
+          send(test_pid, {:child, child})
+
+          receive do
+            :never -> :unreachable
+          end
+        end)
+
+      assert_receive {:child, child}, 1_000
+      assert_receive {:task_running, moved}, 1_000
+
+      # The task is genuinely in flight and the capability genuinely live.
+      assert CapabilityRegistry.status(moved) == :active
+
+      ref = Process.monitor(child)
+      Process.exit(parent, :kill)
+
+      assert_receive {:DOWN, ^ref, :process, ^child, _reason}, 1_000
+      assert wait_until(fn -> CapabilityRegistry.status(moved) == :expired end)
+    end
+
+    test "a slow task is left alone while its spawning process is alive" do
+      test_pid = self()
+
+      {:ok, capability} =
+        CapabilityRegistry.issue(Invoice, {:test, make_ref()}, :read, consumption: :reusable)
+
+      assert {:ok, child} =
+               SpawnAgent.spawn_agent(:slow_agent,
+                 moves: [capability],
+                 task: fn _moved ->
+                   Process.sleep(150)
+                   send(test_pid, :finished)
+                 end
+               )
+
+      ref = Process.monitor(child)
+
+      # Killing the plan is what ends a sub-agent; merely taking a while
+      # is not.
+      assert_receive :finished, 1_000
+      assert_receive {:DOWN, ^ref, :process, ^child, :normal}, 1_000
+    end
   end
 
   defp wait_until(fun, attempts \\ 20)

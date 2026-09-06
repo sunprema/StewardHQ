@@ -4,12 +4,11 @@ defmodule Steward.Idempotency do
   (docs/tech_spec.md §4.2 "Idempotency keys — the phantom-payment
   defense", §6 `idempotency :header | :body_field | :none`, §8 Phase 2).
 
-  There is no Reactor saga or DSL yet (Phases 3-4) to generate and attach
-  one key per plan step automatically, so this module is the mechanism a
-  caller uses by hand today: generate a key once per logical write
-  attempt (including retries of that same attempt), and inject it into
-  the outgoing request the same way every time so retries are safe by
-  construction.
+  `Steward.Sagas.StepRunner` calls `step_key/2` for every saga step and
+  puts the result in the action context, from where
+  `Steward.Changes.EnforceFencing` hands it to `c:Steward.Backend.write/5`.
+  `generate_key/0` remains for callers outside a saga, which have
+  somewhere of their own to store the key between attempts.
 
   For backends declaring `idempotency :none`, spec §4.2's fallback is a
   deep-sync repair step: after a write whose outcome is ambiguous (e.g. a
@@ -21,9 +20,53 @@ defmodule Steward.Idempotency do
 
   @type mode :: :header | :body_field | :none
 
-  @doc "Generates a fresh idempotency key. Callers reuse it across retries of the same write attempt."
+  @doc """
+  Generates a fresh idempotency key. The caller is responsible for
+  storing it and reusing it across retries of the same write attempt —
+  a freshly generated key on a retry is not a retry, it is a second
+  write.
+
+  Prefer `step_key/2` inside a saga: a random key cannot survive a crash
+  and `Steward.SagaExecutor.resume/1`, which is precisely when the
+  phantom-payment defense has to hold.
+  """
   @spec generate_key() :: String.t()
   def generate_key, do: Ash.UUID.generate()
+
+  @doc """
+  The idempotency key for one plan step of one saga — derived, not
+  random, and therefore stable in the two directions that matter
+  (docs/tech_spec.md §4.2):
+
+    * **the same** for every retry of that step, including
+      Reactor's in-process `:retry` after a `:stale_resource`
+      compensation, and a retry that arrives via
+      `Steward.SagaExecutor.resume/1` in a *different process*, minutes
+      later, after the original run's process died. Both saga id and
+      step id are persisted (`Steward.Sagas.Saga`'s `:plan`), so the
+      key derived on resume is bit-for-bit the one the first attempt
+      sent. A random key would not be, and the retry that follows an
+      ambiguous timeout — the exact case this defends — would charge a
+      second time.
+
+    * **different** for any two distinct steps, since the saga id is a
+      UUID and step ids are unique within a plan. Two steps sharing a
+      key would make the second a silent no-op replay of the first.
+
+  Readable on purpose: this string shows up in backend logs and in
+  Stripe's dashboard, where `"<saga>:<step>"` is traceable back to the
+  plan that sent it and an opaque hash is not.
+  """
+  @spec step_key(term(), term()) :: String.t()
+  def step_key(saga_id, step_id), do: "#{saga_id}:#{scalar(step_id)}"
+
+  defp scalar(id) when is_binary(id), do: id
+  defp scalar(id) when is_integer(id) or is_atom(id), do: to_string(id)
+
+  # A step id that isn't a JSON-safe scalar can't survive
+  # `Steward.Sagas.PlanCodec` anyway, so such a plan is never resumed and
+  # only in-process retries have to agree — which `inspect/1` gives.
+  defp scalar(id), do: inspect(id)
 
   @doc """
   Injects `key` into `request` per `mode`:

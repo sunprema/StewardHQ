@@ -16,15 +16,22 @@ defmodule Steward.MCP.FacadeTest do
 
   alias Hermes.Server.Frame
   alias Steward.MCP.Facade
+  alias Steward.Test.Borrows
   alias Steward.Test.Examples
   alias Steward.Test.Examples.Invoice
 
   defp account_id, do: Ecto.UUID.generate()
 
   defp create_invoice!(total \\ Decimal.new(100)) do
-    Examples.create_invoice!(account_id(), total,
-      context: %{steward: %{borrow_token: make_ref()}}
-    )
+    Borrows.creating(Invoice, fn witness ->
+      Examples.create_invoice!(account_id(), total, context: witness)
+    end)
+  end
+
+  defp approve_invoice!(invoice) do
+    Borrows.witnessed(Invoice, invoice.id, fn witness ->
+      Examples.approve_invoice!(invoice, context: witness)
+    end)
   end
 
   defp init_frame! do
@@ -50,7 +57,7 @@ defmodule Steward.MCP.FacadeTest do
   describe "handle_tool_call/3 success" do
     test "pays an invoice: acquires the borrow/lease/fencing itself and returns the updated record" do
       invoice = create_invoice!()
-      Examples.approve_invoice!(invoice, context: %{steward: %{borrow_token: make_ref()}})
+      approve_invoice!(invoice)
       frame = init_frame!()
 
       assert {:reply, response, _frame} =
