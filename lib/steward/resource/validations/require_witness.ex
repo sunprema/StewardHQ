@@ -16,22 +16,38 @@ defmodule Steward.Resource.Validations.RequireWitness do
   Implements `supports/1` for `Ash.Changeset` and `Ash.ActionInput` so
   the same module covers create/update/destroy and generic actions alike
   (see `Steward.Resource.Transformers.RequireWitness` for why `:read` is
-  deliberately excluded). Checks only for the *presence* of
-  `context[:steward][:borrow_token]` — like `Steward.Changes.EnforceFencing`,
-  it trusts a token already in context rather than round-tripping to
-  `Steward.ResourceServer` to re-verify liveness; the caller is expected
-  to have obtained it from a real `Steward.ResourceServer.acquire/3` (or
-  `borrow/3`) call.
+  deliberately excluded).
+
+  ## The token is verified, not merely present
+
+  `context[:steward][:borrow_token]` is checked against
+  `Steward.ResourceServer.verify_borrow/3`, the authority that issued it.
+  Presence alone is not enough, because presence alone is trivially
+  forgeable — `context: %{steward: %{borrow_token: make_ref()}}` would
+  otherwise satisfy a borrow checker the spec calls unbypassable. A token
+  is accepted only when all three hold:
+
+    * the borrow is still held (not released, timed out, or invented),
+    * the process running this action is the process the borrow was
+      granted to, and
+    * the borrow was taken on this resource — i.e. on a
+      `{__MODULE__, resource_id}` key.
+
+  Anything else is `{:error, :unborrowed_access}`, the same structured
+  reason a missing token produces: a caller who cannot prove custody is
+  in the same position as one who never claimed it.
 
   Both `validate/3` and `atomic/3` are implemented identically: the check
-  only inspects `context`, never resource attributes, so it needs no
-  database expression and is atomic-compatible by construction — no
-  `require_atomic? false` needed on account of this validation.
+  only inspects `context` and process identity, never resource
+  attributes, so it needs no database expression and is atomic-compatible
+  by construction — no `require_atomic? false` needed on account of this
+  validation.
   """
 
   use Ash.Resource.Validation
 
   alias Steward.Errors.UnborrowedAccess
+  alias Steward.ResourceServer
 
   @impl true
   def supports(_opts), do: [Ash.Changeset, Ash.ActionInput]
@@ -46,13 +62,13 @@ defmodule Steward.Resource.Validations.RequireWitness do
     check(changeset_query_or_input)
   end
 
-  defp check(changeset_query_or_input) do
-    case get_in(changeset_query_or_input.context, [:steward, :borrow_token]) do
-      nil ->
-        {:error, UnborrowedAccess.exception(resource: changeset_query_or_input.resource)}
-
-      _borrow_token ->
-        :ok
+  defp check(%{resource: resource, context: context}) do
+    with borrow_token when not is_nil(borrow_token) <-
+           get_in(context, [:steward, :borrow_token]),
+         {:ok, _entry} <- ResourceServer.verify_borrow(borrow_token, resource) do
+      :ok
+    else
+      _missing_or_unverifiable -> {:error, UnborrowedAccess.exception(resource: resource)}
     end
   end
 end

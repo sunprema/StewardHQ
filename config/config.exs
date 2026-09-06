@@ -75,6 +75,13 @@ config :steward,
 # what an agent can call is a deliberate operator decision per app.
 config :steward, Steward.MCP.Facade, resources: []
 
+# The Steward.Backend that Steward.Shadows.Invoice fences writes against.
+# Read with Application.compile_env!/2, so this must be set in every
+# environment the resource is compiled for — it defaults to nothing on
+# purpose. The value below is the in-memory dummy gateway; a real
+# deployment replaces it with an adapter for the actual legacy system.
+config :steward, Steward.Shadows.Invoice, backend: Steward.Cookbook.PaymentGateway
+
 # Configure the endpoint
 config :steward, StewardWeb.Endpoint,
   url: [host: "localhost"],

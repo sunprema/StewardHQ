@@ -10,6 +10,7 @@ defmodule Steward.Application do
     children = [
       StewardWeb.Telemetry,
       Steward.Registry,
+      Steward.BorrowRegistry,
       Steward.ResourceServerSupervisor,
       Steward.LeaseProviderSupervisor,
       Steward.CapabilityRegistry,

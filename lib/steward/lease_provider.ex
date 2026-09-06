@@ -54,7 +54,18 @@ defmodule Steward.LeaseProvider do
     }
   end
 
-  @type lease :: %{token: pos_integer(), ref: reference(), expires_at: DateTime.t()}
+  @typedoc """
+  A lease as handed to callers. Carries `:key` — the `resource_id` this
+  provider was started for — so any downstream consumer (notably
+  `Steward.Changes.EnforceFencing`) can re-verify the lease against this
+  authority instead of trusting the values it was handed.
+  """
+  @type lease :: %{
+          token: pos_integer(),
+          ref: reference(),
+          expires_at: DateTime.t(),
+          key: term()
+        }
 
   @doc """
   Acquires a lease on `resource_id`. Returns `{:error, :lease_held}` if
@@ -127,7 +138,7 @@ defmodule Steward.LeaseProvider do
       token = state.token + 1
       lease = new_lease(token, ttl, System.monotonic_time(:millisecond))
       state = %{state | token: token, lease: lease}
-      {:reply, {:ok, public_lease(lease)}, state}
+      {:reply, {:ok, public_lease(state, lease)}, state}
     end
   end
 
@@ -137,6 +148,7 @@ defmodule Steward.LeaseProvider do
         {:reply, {:error, :lease_expired}, state}
 
       System.monotonic_time(:millisecond) - state.lease.acquired_at + ttl > max_duration ->
+        Process.cancel_timer(state.lease.timer_ref)
         {:reply, {:error, :lease_expired}, %{state | lease: nil}}
 
       true ->
@@ -144,7 +156,7 @@ defmodule Steward.LeaseProvider do
         Process.cancel_timer(lease.timer_ref)
         timer_ref = Process.send_after(self(), {:expire, lease_ref}, ttl)
         lease = %{lease | timer_ref: timer_ref}
-        {:reply, {:ok, public_lease(lease)}, %{state | lease: lease}}
+        {:reply, {:ok, public_lease(state, lease)}, %{state | lease: lease}}
     end
   end
 
@@ -158,7 +170,7 @@ defmodule Steward.LeaseProvider do
   end
 
   def handle_call(:current, _from, state) do
-    reply = if held?(state), do: public_lease(state.lease), else: nil
+    reply = if held?(state), do: public_lease(state, state.lease), else: nil
     {:reply, reply, state}
   end
 
@@ -188,5 +200,7 @@ defmodule Steward.LeaseProvider do
     }
   end
 
-  defp public_lease(lease), do: Map.take(lease, [:token, :ref, :expires_at])
+  defp public_lease(state, lease) do
+    lease |> Map.take([:token, :ref, :expires_at]) |> Map.put(:key, state.resource_id)
+  end
 end

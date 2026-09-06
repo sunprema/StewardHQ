@@ -9,4 +9,18 @@ defmodule Steward do
 
   @doc "See `Steward.ResourceServer.borrow/3`."
   defdelegate borrow(resource_id, mode, fun), to: Steward.ResourceServer
+
+  @doc """
+  Wraps a borrow token as the action context every stewarded Ash action
+  requires (spec §4.1's Witness Pattern):
+
+      Steward.borrow({MyApp.Invoice, id}, :exclusive, fn token ->
+        MyApp.Billing.pay_invoice(invoice, amount, context: Steward.witness(token))
+      end)
+
+  The token is only honoured for the process that acquired it, and only
+  while the borrow is held — see `Steward.ResourceServer.verify_borrow/3`.
+  """
+  @spec witness(reference()) :: %{steward: %{borrow_token: reference()}}
+  def witness(borrow_token), do: %{steward: %{borrow_token: borrow_token}}
 end

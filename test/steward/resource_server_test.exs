@@ -191,6 +191,87 @@ defmodule Steward.ResourceServerTest do
     end
   end
 
+  describe "verify_borrow/3 (the Witness Pattern's actual check)" do
+    test "a live borrow held by this process on this resource verifies" do
+      id = make_ref()
+
+      assert {:ok, token} = ResourceServer.acquire({FakeResource, id}, :exclusive)
+
+      assert {:ok, %{key: {FakeResource, ^id}, mode: :exclusive, holder: holder}} =
+               ResourceServer.verify_borrow(token, FakeResource)
+
+      assert holder == self()
+    end
+
+    test "a fabricated token is refused" do
+      assert {:error, :unborrowed_access} =
+               ResourceServer.verify_borrow(make_ref(), FakeResource)
+    end
+
+    test "a term that isn't even a reference is refused" do
+      assert {:error, :unborrowed_access} =
+               ResourceServer.verify_borrow(:trust_me, FakeResource)
+    end
+
+    test "a released token stops verifying" do
+      resource = {FakeResource, make_ref()}
+
+      assert {:ok, token} = ResourceServer.acquire(resource, :exclusive)
+      assert {:ok, _entry} = ResourceServer.verify_borrow(token, FakeResource)
+
+      assert :ok = ResourceServer.release(resource, token)
+      assert {:error, :unborrowed_access} = ResourceServer.verify_borrow(token, FakeResource)
+    end
+
+    test "a token whose holder died stops verifying, without anyone releasing it" do
+      resource = {FakeResource, make_ref()}
+      test_pid = self()
+
+      holder =
+        spawn(fn ->
+          {:ok, token} = ResourceServer.acquire(resource, :exclusive)
+          send(test_pid, {:token, token})
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive {:token, token}, 1_000
+      assert {:ok, _entry} = ResourceServer.verify_borrow(token, FakeResource, holder)
+
+      Process.exit(holder, :kill)
+
+      assert wait_until(fn ->
+               ResourceServer.verify_borrow(token, FakeResource, holder) ==
+                 {:error, :unborrowed_access}
+             end)
+    end
+
+    test "a live token cannot be laundered through another process" do
+      resource = {FakeResource, make_ref()}
+      test_pid = self()
+
+      assert {:ok, token} = ResourceServer.acquire(resource, :exclusive)
+
+      spawn(fn ->
+        send(test_pid, {:verified, ResourceServer.verify_borrow(token, FakeResource)})
+      end)
+
+      assert_receive {:verified, {:error, :unborrowed_access}}, 1_000
+    end
+
+    test "a borrow on one resource cannot witness another" do
+      id = make_ref()
+      assert {:ok, token} = ResourceServer.acquire({FakeResource, id}, :exclusive)
+
+      assert {:error, :unborrowed_access} =
+               ResourceServer.verify_borrow(token, OtherFakeResource)
+    end
+
+    test "a borrow taken on a bare id cannot witness a resource action" do
+      assert {:ok, token} = ResourceServer.acquire(make_ref(), :exclusive)
+      assert {:error, :unborrowed_access} = ResourceServer.verify_borrow(token, FakeResource)
+    end
+  end
+
   describe "borrow/3" do
     test "releases on normal return" do
       resource = resource_id()
@@ -212,6 +293,18 @@ defmodule Steward.ResourceServerTest do
     test "top-level Steward.borrow/3 delegates" do
       resource = resource_id()
       assert :ok = Steward.borrow(resource, :shared, fn -> :ok end)
+    end
+
+    test "an arity-1 function receives the borrow token, ready to witness with" do
+      id = make_ref()
+
+      verified =
+        Steward.borrow({FakeResource, id}, :exclusive, fn token ->
+          %{steward: %{borrow_token: ^token}} = Steward.witness(token)
+          ResourceServer.verify_borrow(token, FakeResource)
+        end)
+
+      assert {:ok, %{key: {FakeResource, ^id}}} = verified
     end
   end
 

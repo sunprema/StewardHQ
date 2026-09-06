@@ -15,6 +15,8 @@ defmodule Steward.Sagas.StepRunner do
   Every action call carries that resource's plan-scoped `borrow_token`
   witness, plus a fresh, step-scoped `Steward.LeaseProvider` lease for
   mutating actions — fencing is per-write (spec §3.2), unlike borrowing.
+  Both are keyed `{resource, resource_id}`, so a lease and a borrow always
+  describe the same thing and resources sharing an id never collide.
 
   ## Capability disposition (CLAUDE.md invariant 3)
 
@@ -150,12 +152,18 @@ defmodule Steward.Sagas.StepRunner do
     context = build_context(step, opts)
 
     if mutating?(step) do
-      case LeaseProvider.acquire(step.resource_id) do
+      # Leases are keyed exactly like borrows — `{resource, resource_id}`,
+      # not the bare id. Two resources sharing an id (sequential integers,
+      # or the same uuid mirrored across shadows) would otherwise contend
+      # for one lease server and see spurious `{:error, :lease_held}`.
+      key = borrow_key(step)
+
+      case LeaseProvider.acquire(key) do
         {:ok, lease} ->
           try do
             fun.(put_in(context, [:steward, :lease], lease))
           after
-            LeaseProvider.release(step.resource_id, lease.ref)
+            LeaseProvider.release(key, lease.ref)
           end
 
         {:error, :lease_held} ->
@@ -167,9 +175,10 @@ defmodule Steward.Sagas.StepRunner do
   end
 
   defp build_context(step, opts) do
-    borrow_token = Map.fetch!(opts[:borrow_tokens], {step.resource, step.resource_id})
-    %{steward: %{borrow_token: borrow_token}}
+    Steward.witness(Map.fetch!(opts[:borrow_tokens], borrow_key(step)))
   end
+
+  defp borrow_key(step), do: {step.resource, step.resource_id}
 
   defp mutating?(step) do
     case AshInfo.action(step.resource, step.action) do

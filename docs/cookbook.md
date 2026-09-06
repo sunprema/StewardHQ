@@ -22,10 +22,16 @@ alias Hermes.Server.Frame
 
 {:ok, frame} = Facade.init(%{}, Frame.new())
 
+# Creating the invoice is itself a stewarded action, so it needs a real
+# borrow: `Steward.witness/1` wraps the token the borrow hands you, and
+# the borrow is released as soon as the function returns — well before the
+# tool calls below acquire their own.
 invoice =
-  Cookbook.create_invoice!("acme-inv-1001", Ecto.UUID.generate(), Decimal.new(500),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Invoice, :new}, :exclusive, fn token ->
+    Cookbook.create_invoice!("acme-inv-1001", Ecto.UUID.generate(), Decimal.new(500),
+      context: Steward.witness(token)
+    )
+  end)
 
 {:reply, _approved, frame} =
   Facade.handle_tool_call("approve_invoice", %{"resource_id" => invoice.id}, frame)
@@ -69,9 +75,11 @@ Cancelling an order is a three-step plan, not one action: refund the payment, re
 
 ```elixir
 order =
-  Cookbook.create_order!("acme-ord-2002", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Order, :new}, :exclusive, fn token ->
+    Cookbook.create_order!("acme-ord-2002", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
+      context: Steward.witness(token)
+    )
+  end)
 
 plan = [
   %{id: Ash.UUID.generate(), resource: Cookbook.Order, resource_id: order.id, action: :refund, observed_at: DateTime.utc_now()},
@@ -89,9 +97,11 @@ That's the happy path — refund and restock both went through the (simulated) w
 
 ```elixir
 order =
-  Cookbook.create_order!("acme-ord-2003", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.Order, :new}, :exclusive, fn token ->
+    Cookbook.create_order!("acme-ord-2003", Ecto.UUID.generate(), "sku-42", 2, Decimal.new(80),
+      context: Steward.witness(token)
+    )
+  end)
 
 Steward.Cookbook.Warehouse.simulate_failure(order.external_id, :out_of_stock)
 
@@ -130,9 +140,11 @@ alias Hermes.Server.Frame
 {:ok, frame} = Facade.init(%{}, Frame.new())
 
 invoice =
-  Cookbook.create_stripe_invoice!("acme-stripe-1001", Ecto.UUID.generate(), Decimal.new(500),
-    context: %{steward: %{borrow_token: make_ref()}}
-  )
+  Steward.borrow({Cookbook.StripeInvoice, :new}, :exclusive, fn token ->
+    Cookbook.create_stripe_invoice!("acme-stripe-1001", Ecto.UUID.generate(), Decimal.new(500),
+      context: Steward.witness(token)
+    )
+  end)
 
 {:reply, _approved, frame} =
   Facade.handle_tool_call("approve_stripe_invoice", %{"resource_id" => invoice.id}, frame)
