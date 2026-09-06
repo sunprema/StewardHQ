@@ -14,6 +14,7 @@ defmodule Steward.Changes.EnforceFencingTest do
 
   use Steward.DataCase, async: true
 
+  alias Steward.Idempotency
   alias Steward.LeaseProvider
   alias Steward.Shadows
   alias Steward.Test.FakeBackend
@@ -129,6 +130,80 @@ defmodule Steward.Changes.EnforceFencingTest do
 
     assert {:error, :stale_resource, remote_state} = Steward.Errors.reason(ash_error)
     assert remote_state.amount_paid == Decimal.new(999)
+  end
+
+  describe "idempotency keys (spec §4.2's phantom-payment defense)" do
+    # The nightmare case from spec §4.2: the backend performed the write
+    # but the caller never learned it did. The retry that follows must
+    # not apply the payment a second time.
+    test "retrying with the same key replays the stored result instead of writing twice" do
+      external_id = external_id()
+      invoice = create_invoice!(external_id)
+      key = Steward.Idempotency.step_key(Ash.UUID.generate(), 1)
+
+      assert {:ok, lease} = LeaseProvider.acquire(external_id)
+      context = %{steward: %{lease: lease, idempotency_key: key}}
+
+      assert {:ok, first} = Shadows.record_payment(invoice, Decimal.new(10), context: context)
+
+      # `invoice` is deliberately the *pre-write* struct — the stale state
+      # a caller retrying an ambiguous failure still holds, whose version
+      # the first write has already moved past.
+      assert {:ok, replayed} = Shadows.record_payment(invoice, Decimal.new(10), context: context)
+
+      assert first.version == 1
+      assert replayed.version == 1
+      assert FakeBackend.write_count(external_id) == 1
+
+      assert {:ok, %{version: 1, state: %{amount_paid: amount_paid}}} =
+               FakeBackend.fetch(external_id)
+
+      assert Decimal.equal?(amount_paid, Decimal.new(10))
+    end
+
+    test "a different key is a different write, not a replay" do
+      external_id = external_id()
+      invoice = create_invoice!(external_id)
+      saga_id = Ash.UUID.generate()
+
+      assert {:ok, lease} = LeaseProvider.acquire(external_id)
+
+      assert {:ok, paid} =
+               Shadows.record_payment(invoice, Decimal.new(10),
+                 context: %{
+                   steward: %{lease: lease, idempotency_key: Idempotency.step_key(saga_id, 1)}
+                 }
+               )
+
+      assert {:ok, _second} =
+               Shadows.record_payment(paid, Decimal.new(20),
+                 context: %{
+                   steward: %{lease: lease, idempotency_key: Idempotency.step_key(saga_id, 2)}
+                 }
+               )
+
+      assert FakeBackend.write_count(external_id) == 2
+    end
+
+    # Without a key there is nothing to deduplicate against, so the retry
+    # is caught by version fencing instead — discoverable, but only after
+    # the fact. This is the `idempotency :none` case spec §4.2 answers
+    # with the deep-sync repair step rather than with keys.
+    test "without a key the same retry is rejected as :stale_resource" do
+      external_id = external_id()
+      invoice = create_invoice!(external_id)
+
+      assert {:ok, lease} = LeaseProvider.acquire(external_id)
+      context = %{steward: %{lease: lease}}
+
+      assert {:ok, _first} = Shadows.record_payment(invoice, Decimal.new(10), context: context)
+
+      assert {:error, ash_error} =
+               Shadows.record_payment(invoice, Decimal.new(10), context: context)
+
+      assert {:error, :stale_resource, _remote_state} = Steward.Errors.reason(ash_error)
+      assert FakeBackend.write_count(external_id) == 1
+    end
   end
 
   test "a fenced write with a valid lease succeeds and updates version/sync_status" do

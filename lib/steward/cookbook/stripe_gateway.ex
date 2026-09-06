@@ -30,6 +30,35 @@ defmodule Steward.Cookbook.StripeGateway do
   — that part is real — its response just isn't what this module trusts
   to decide whether a write is stale.
 
+  ## Idempotency keys are not fencing tokens
+
+  This module declares `idempotency :header` (spec §6) and sends
+  `opts[:idempotency_key]` — the caller's stable, per-step key from
+  `Steward.Idempotency.step_key/2` — in Stripe's `Idempotency-Key`
+  header.
+
+  It previously sent the *fencing token* there instead, which looks
+  reasonable and is exactly backwards. A fencing token changes with
+  every new lease, by design (spec §3.2, "monotonically increasing"). So
+  the retry that follows an ambiguous failure — a timeout on a charge
+  that may or may not have gone through — would take a fresh lease, get
+  a fresh token, and present Stripe with a key it had never seen. Stripe
+  would treat it as a new charge and the customer would pay twice: the
+  phantom payment of spec §4.2, caused by the defense against it.
+
+  The fencing token is no longer sent over HTTP at all. Stripe has no
+  conditional-write primitive to spend it on (no `If-Match` on
+  `/v1/payment_intents`), so fencing is enforced before the call, in the
+  version check in `write/5` — the `locking :conditional_write` tier of
+  spec §6's fallback ladder, implemented locally because this backend
+  sits at the `:serialized` end of it.
+
+  Create and confirm are two different requests with different
+  parameters, so they carry two derived keys (`...:create`,
+  `...:confirm`). Reusing one key across both would be rejected by real
+  Stripe, which treats a repeated key with different parameters as an
+  error rather than a replay.
+
   Requires `stripe-mock` running locally — see `docs/cookbook.md`.
   Dev-only, same as every other `Steward.Cookbook` module (see
   `Steward.Cookbook.PaymentGateway`'s moduledoc for why).
@@ -56,22 +85,25 @@ defmodule Steward.Cookbook.StripeGateway do
   end
 
   @impl true
-  def write(resource_id, changes, fencing_token, expected_version) do
+  def write(resource_id, changes, _fencing_token, expected_version, opts) do
     ensure_table()
     {current_version, current_state} = fetch_raw(resource_id)
 
+    # The fencing check, spent here rather than in a header: Stripe has no
+    # conditional write to attach it to, so a stale writer is stopped
+    # before it can reach the API at all.
     if current_version == expected_version do
-      do_write(resource_id, changes, fencing_token, current_version, current_state)
+      do_write(resource_id, changes, opts[:idempotency_key], current_version, current_state)
     else
       {:error, :stale_resource, current_state}
     end
   end
 
-  defp do_write(resource_id, changes, fencing_token, current_version, current_state) do
+  defp do_write(resource_id, changes, idempotency_key, current_version, current_state) do
     amount_cents =
       current_state |> Map.merge(changes) |> Map.get(:amount_paid) |> to_amount_cents()
 
-    case ensure_payment_intent(current_state, amount_cents, fencing_token) do
+    case ensure_payment_intent(current_state, amount_cents, idempotency_key) do
       {:ok, stripe_id} ->
         new_state =
           current_state |> Map.merge(changes) |> Map.put(:stripe_payment_intent_id, stripe_id)
@@ -85,20 +117,20 @@ defmodule Steward.Cookbook.StripeGateway do
     end
   end
 
-  defp ensure_payment_intent(%{stripe_payment_intent_id: stripe_id}, _amount_cents, fencing_token)
+  defp ensure_payment_intent(%{stripe_payment_intent_id: stripe_id}, _amount_cents, key)
        when is_binary(stripe_id) do
-    case confirm_payment_intent(stripe_id, fencing_token) do
+    case confirm_payment_intent(stripe_id, key) do
       {:ok, _response} -> {:ok, stripe_id}
       {:error, _reason} = error -> error
     end
   end
 
-  defp ensure_payment_intent(_state, amount_cents, fencing_token) do
-    create_payment_intent(amount_cents, fencing_token)
+  defp ensure_payment_intent(_state, amount_cents, key) do
+    create_payment_intent(amount_cents, key)
   end
 
-  defp create_payment_intent(amount_cents, fencing_token) do
-    request(:post, "/v1/payment_intents", fencing_token,
+  defp create_payment_intent(amount_cents, key) do
+    request(:post, "/v1/payment_intents", derive(key, "create"),
       amount: amount_cents || 0,
       currency: "usd"
     )
@@ -108,18 +140,31 @@ defmodule Steward.Cookbook.StripeGateway do
     end
   end
 
-  defp confirm_payment_intent(stripe_id, fencing_token) do
-    request(:post, "/v1/payment_intents/#{stripe_id}/confirm", fencing_token,
+  defp confirm_payment_intent(stripe_id, key) do
+    request(:post, "/v1/payment_intents/#{stripe_id}/confirm", derive(key, "confirm"),
       payment_method: "pm_card_visa"
     )
   end
 
+  # A read is naturally idempotent and carries no key.
   defp get_payment_intent(stripe_id) do
     request(:get, "/v1/payment_intents/#{stripe_id}", nil, [])
   end
 
-  defp request(method, path, fencing_token, form) do
-    headers = if fencing_token, do: [{"idempotency-key", to_string(fencing_token)}], else: []
+  # One key per distinct request. Stripe rejects a repeated key whose
+  # parameters differ, so create and confirm cannot share the caller's.
+  defp derive(nil, _suffix), do: nil
+  defp derive(key, suffix), do: "#{key}:#{suffix}"
+
+  defp request(method, path, idempotency_key, form) do
+    # Injected through Steward.Idempotency rather than hand-set, so this
+    # backend applies the `idempotency :header` mode spec §6 declares in
+    # exactly one place. A nil key degrades to `:none` — no header.
+    headers =
+      %{}
+      |> Steward.Idempotency.inject(idempotency_key, idempotency_mode(idempotency_key))
+      |> Map.get(:headers, %{})
+      |> Map.to_list()
 
     result =
       Req.request(
@@ -136,6 +181,9 @@ defmodule Steward.Cookbook.StripeGateway do
       {:error, reason} -> {:error, {:stripe_unreachable, reason}}
     end
   end
+
+  defp idempotency_mode(nil), do: :none
+  defp idempotency_mode(_key), do: :header
 
   defp to_amount_cents(nil), do: nil
 

@@ -8,6 +8,15 @@ defmodule Steward.Test.FakeBackend do
   `test/test_helper.exs`, keyed by `resource_id`. Tests stay isolated the
   same way `Steward.ResourceServerTest` already isolates: by using a
   unique `resource_id` per test, not by process ownership.
+
+  ## Idempotent replay
+
+  `write/5` records the snapshot it produced against the call's
+  `opts[:idempotency_key]`. A second call carrying the same key returns
+  that stored snapshot verbatim without touching state — the in-memory
+  equivalent of what a real gateway does with `Idempotency-Key`, and
+  what makes retrying an ambiguous write safe (spec §4.2's phantom
+  payment). A `nil` key opts out, which is the `idempotency :none` case.
   """
 
   @behaviour Steward.Backend
@@ -45,18 +54,56 @@ defmodule Steward.Test.FakeBackend do
     {:ok, %{version: version, state: state}}
   end
 
+  @doc "How many times `write/5` actually reached state, as opposed to replaying a stored result."
+  @spec write_count(term()) :: non_neg_integer()
+  def write_count(resource_id) do
+    case :ets.lookup(@table, {:writes, resource_id}) do
+      [{_key, count}] -> count
+      [] -> 0
+    end
+  end
+
   @impl true
-  def write(resource_id, changes, _fencing_token, expected_version) do
+  def write(resource_id, changes, fencing_token, expected_version, opts) do
+    case replayed(opts[:idempotency_key]) do
+      {:ok, snapshot} -> {:ok, snapshot}
+      :none -> do_write(resource_id, changes, fencing_token, expected_version, opts)
+    end
+  end
+
+  defp do_write(resource_id, changes, _fencing_token, expected_version, opts) do
     {current_version, current_state} = fetch_raw(resource_id)
 
     if current_version == expected_version do
       new_state = Map.merge(current_state, changes)
       new_version = current_version + 1
       :ets.insert(@table, {resource_id, new_version, new_state})
-      {:ok, %{version: new_version, state: new_state}}
+      :ets.update_counter(@table, {:writes, resource_id}, 1, {{:writes, resource_id}, 0})
+      snapshot = %{version: new_version, state: new_state}
+      record_key(opts[:idempotency_key], snapshot)
+      {:ok, snapshot}
     else
+      # A rejected write never happened, so it must not be recorded
+      # against the key: the retry that follows a resync has to be
+      # allowed through.
       {:error, :stale_resource, current_state}
     end
+  end
+
+  defp replayed(nil), do: :none
+
+  defp replayed(key) do
+    case :ets.lookup(@table, {:idempotency, key}) do
+      [{_key, snapshot}] -> {:ok, snapshot}
+      [] -> :none
+    end
+  end
+
+  defp record_key(nil, _snapshot), do: :ok
+
+  defp record_key(key, snapshot) do
+    :ets.insert(@table, {{:idempotency, key}, snapshot})
+    :ok
   end
 
   defp fetch_raw(resource_id) do

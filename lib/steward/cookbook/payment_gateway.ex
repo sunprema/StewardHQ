@@ -20,6 +20,16 @@ defmodule Steward.Cookbook.PaymentGateway do
   *deterministically* trigger `{:error, :stale_resource, remote_state}`
   on the next fenced write — a real conflict, on demand, rather than
   hoping for a race.
+
+  ## Idempotent replay
+
+  `write/5` records the snapshot it produced against the call's
+  `opts[:idempotency_key]`, and a later call with the same key replays
+  that snapshot instead of writing again — the in-memory stand-in for
+  what a real gateway does with `Idempotency-Key`, so the cookbook's
+  retry paths behave the way a real one would (spec §4.2). A rejected
+  (stale) write is deliberately *not* recorded: it never happened, and
+  the retry after a resync has to get through.
   """
 
   @behaviour Steward.Backend
@@ -48,18 +58,44 @@ defmodule Steward.Cookbook.PaymentGateway do
   end
 
   @impl true
-  def write(resource_id, changes, _fencing_token, expected_version) do
+  def write(resource_id, changes, fencing_token, expected_version, opts) do
     ensure_table()
+
+    case replayed(opts[:idempotency_key]) do
+      {:ok, snapshot} -> {:ok, snapshot}
+      :none -> do_write(resource_id, changes, fencing_token, expected_version, opts)
+    end
+  end
+
+  defp do_write(resource_id, changes, _fencing_token, expected_version, opts) do
     {current_version, current_state} = fetch_raw(resource_id)
 
     if current_version == expected_version do
       new_state = Map.merge(current_state, changes)
       new_version = current_version + 1
       :ets.insert(@table, {resource_id, new_version, new_state})
-      {:ok, %{version: new_version, state: new_state}}
+      snapshot = %{version: new_version, state: new_state}
+      record_key(opts[:idempotency_key], snapshot)
+      {:ok, snapshot}
     else
       {:error, :stale_resource, current_state}
     end
+  end
+
+  defp replayed(nil), do: :none
+
+  defp replayed(key) do
+    case :ets.lookup(@table, {:idempotency, key}) do
+      [{_key, snapshot}] -> {:ok, snapshot}
+      [] -> :none
+    end
+  end
+
+  defp record_key(nil, _snapshot), do: :ok
+
+  defp record_key(key, snapshot) do
+    :ets.insert(@table, {{:idempotency, key}, snapshot})
+    :ok
   end
 
   defp fetch_raw(resource_id) do

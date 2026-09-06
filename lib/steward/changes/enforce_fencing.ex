@@ -37,6 +37,22 @@ defmodule Steward.Changes.EnforceFencing do
   (`{:error, :stale_resource, remote_state}` once unwrapped via
   `Steward.Errors.reason/1`).
 
+  ## Idempotency
+
+  `context[:steward][:idempotency_key]` is passed through to
+  `c:Steward.Backend.write/5`, which is what makes a retry of a write
+  whose outcome was ambiguous safe rather than a duplicate (spec §4.2's
+  phantom payment). `Steward.Sagas.StepRunner` derives that key per plan
+  step; a caller outside a saga has no step identity, so the key is
+  `nil` and the backend is on the deep-sync repair path
+  (`Steward.RepairLoop`) instead.
+
+  The key is deliberately *not* the fencing token, even though both
+  travel with the write. A fencing token must change with every new
+  lease; an idempotency key must stay identical across the retries of
+  one attempt. Substituting either for the other silently destroys the
+  guarantee the other provides.
+
   Options:
     * `:backend` (required) — module implementing `Steward.Backend`.
     * `:resource_id_attribute` (default `:external_id`) — attribute identifying
@@ -130,8 +146,9 @@ defmodule Steward.Changes.EnforceFencing do
     resource_id = Ash.Changeset.get_attribute(changeset, opts[:resource_id_attribute])
     expected_version = Map.get(changeset.data, opts[:version_attribute])
     changes = writable_changes(changeset, opts)
+    write_opts = [idempotency_key: get_in(changeset.context, [:steward, :idempotency_key])]
 
-    case opts[:backend].write(resource_id, changes, lease.token, expected_version) do
+    case opts[:backend].write(resource_id, changes, lease.token, expected_version, write_opts) do
       {:ok, %{version: version, state: state}} ->
         reconciled = known_attribute_changes(changeset.resource, state)
 
