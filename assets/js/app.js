@@ -81,3 +81,15 @@ if (process.env.NODE_ENV === "development") {
   })
 }
 
+
+// Console identifier copy affordance (StewardWeb.Console.Components.id/1).
+// Opaque ids are truncated on screen, so copy must yield the full value.
+window.addEventListener("steward:copy", (event) => {
+  const text = event.detail && event.detail.text
+  if (!text) return
+  navigator.clipboard?.writeText(text).then(() => {
+    const el = event.target
+    if (!el || !el.animate) return
+    el.animate([{opacity: 1}, {opacity: 0.3}, {opacity: 1}], {duration: 320})
+  })
+})

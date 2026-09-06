@@ -47,6 +47,19 @@ defmodule StewardWeb.Router do
       #
       # If an authenticated user must *not* be present:
       # on_mount {StewardWeb.LiveUserAuth, :live_no_user}
+
+      # StewardHQ console (docs/ux_requirements.md §5). Read-only: no route
+      # here mutates runtime state. Each LiveView declares
+      # `on_mount {StewardWeb.LiveUserAuth, :live_user_required}` itself.
+      #
+      # Note the MCP endpoint under /mcp has no auth today; mounting these
+      # behind AshAuthentication does not change that.
+      live "/console", Console.OverviewLive, :index
+      live "/console/sagas", Console.SagasLive, :index
+      live "/console/sagas/:id", Console.SagaLive, :show
+      live "/console/sagas/:id/steps/:step_id", Console.StepLive, :show
+      live "/console/borrows", Console.BorrowBoardLive, :index
+      live "/console/agents", Console.AgentsLive, :index
     end
   end
 

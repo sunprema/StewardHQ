@@ -4,6 +4,7 @@
 @import "tailwindcss" source(none);
 @source "../../deps/ash_authentication_phoenix";
 @import "phoenix-colocated/steward/colocated.css";
+@import "./console.css";
 @source "../css";
 @source "../js";
 @source "../../lib/steward_web";

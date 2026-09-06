@@ -132,4 +132,13 @@ defmodule Steward.Sagas.Saga do
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
+
+  relationships do
+    # The inverse of `Steward.Sagas.SagaStep.saga`. The console loads a
+    # saga's steps in one query rather than fanning out per row.
+    has_many :steps, Steward.Sagas.SagaStep do
+      destination_attribute :saga_id
+      public? true
+    end
+  end
 end
