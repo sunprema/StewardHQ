@@ -10,8 +10,15 @@ config :steward,
 config :steward, Steward.MCP.Facade,
   resources: [
     {Steward.Cookbook.Invoice, state_attribute: :status},
-    {Steward.Cookbook.Order, state_attribute: :status}
+    {Steward.Cookbook.Order, state_attribute: :status},
+    {Steward.Cookbook.StripeInvoice, state_attribute: :status}
   ]
+
+# Requires `stripe-mock` running locally (`brew install stripe-mock &&
+# stripe-mock`) — see docs/cookbook.md Recipe 3.
+config :steward, Steward.Cookbook.StripeGateway,
+  base_url: "http://localhost:12111",
+  api_key: "sk_test_cookbook"
 
 # Configure your database
 config :steward, Steward.Repo,

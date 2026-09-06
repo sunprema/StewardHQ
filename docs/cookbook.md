@@ -1,6 +1,6 @@
 # Engineering Cookbook
 
-Dev-only, runnable worked examples of StewardHQ acting as a resource gateway in front of two dummy backend APIs — `Steward.Cookbook.PaymentGateway` (stands in for a payment processor) and `Steward.Cookbook.Warehouse` (stands in for an inventory/fulfillment system). Both simulate the real quirks (version conflicts, on-demand failures) that make the safety mechanisms in [`README.md`](../README.md) and [`docs/examples.md`](examples.md) worth having, rather than just asserting they work.
+Dev-only, runnable worked examples of StewardHQ acting as a resource gateway in front of three dummy backend APIs — `Steward.Cookbook.PaymentGateway` (stands in for a payment processor), `Steward.Cookbook.Warehouse` (stands in for an inventory/fulfillment system), and `Steward.Cookbook.StripeGateway` (makes real HTTP calls against [`stripe-mock`](https://github.com/stripe/stripe-mock), not the real Stripe API). All three simulate the real quirks (version conflicts, on-demand failures) that make the safety mechanisms in [`README.md`](../README.md) and [`docs/examples.md`](examples.md) worth having, rather than just asserting they work.
 
 **Dev only, on purpose.** None of this is registered in `test` or `prod` config (see `config/dev.exs` and `Steward.Cookbook.PaymentGateway`'s moduledoc). The data lives in shared, in-memory ETS tables that reset every time you restart the app — don't expect anything you create here to survive a restart.
 
@@ -110,6 +110,52 @@ order.status
 ```
 
 `refund` genuinely succeeded against the payment gateway, `restock` then failed against the warehouse — and because `restock` isn't the kind of failure that gets retried (`:stale_resource` is the only one that is), the saga undoes `refund` automatically and the order ends up back where it started, not stuck halfway between "refunded" and "not refunded." Check `Steward.Sagas.SagaStep` for that saga's ID and you'll see the audit trail: `refund` marked `:succeeded` then `:undone`, `restock` marked `:failed` with disposition `:dropped`.
+
+## Recipe 3: Paying an invoice through a real HTTP call to a Stripe-shaped API
+
+Recipe 1's payment gateway is an in-memory table pretending to be a backend. This one makes an actual HTTP request — to [`stripe-mock`](https://github.com/stripe/stripe-mock), Stripe's own open-source server that validates request/response shape against Stripe's real API schema. No Stripe account or credentials needed.
+
+**Before running this one**, start it in a separate terminal:
+
+```bash
+brew install stripe-mock
+stripe-mock   # listens on :12111 (http) and :12112 (https) by default
+```
+
+```elixir
+alias Steward.Cookbook
+alias Steward.MCP.Facade
+alias Hermes.Server.Frame
+
+{:ok, frame} = Facade.init(%{}, Frame.new())
+
+invoice =
+  Cookbook.create_stripe_invoice!("acme-stripe-1001", Ecto.UUID.generate(), Decimal.new(500),
+    context: %{steward: %{borrow_token: make_ref()}}
+  )
+
+{:reply, _approved, frame} =
+  Facade.handle_tool_call("approve_stripe_invoice", %{"resource_id" => invoice.id}, frame)
+
+{:reply, paid, _frame} =
+  Facade.handle_tool_call(
+    "pay_stripe_invoice",
+    %{"resource_id" => invoice.id, "amount_paid" => "500"},
+    frame
+  )
+
+paid.structured_content["status"]
+#=> "paid"
+
+Steward.Cookbook.StripeGateway.fetch(invoice.external_id)
+#=> {:ok, %{version: 1, state: %{status: :paid, amount_paid: Decimal.new("500"), stripe_payment_intent_id: "pi_..."}}}
+```
+
+That `stripe_payment_intent_id` is a real object id, handed back by a real HTTP response from `stripe-mock` — `pay_stripe_invoice` genuinely posted to `/v1/payment_intents` with a real `Idempotency-Key` header (the plan step's fencing token) and parsed a real Stripe-shaped JSON body back.
+
+### The honest limit of this recipe
+
+`stripe-mock` validates shape, not state — verified by hand while building this: POST a value in `metadata` on create, immediately re-fetch the same object by id, and it comes back empty. Nothing round-trips. So the one thing `write/4` exists to prove — "does the backend reject a write whose expected version already drifted" — can't be demonstrated by `stripe-mock`'s own responses here, the way Recipe 1's "two concurrent payments" race genuinely can. `Steward.Cookbook.StripeGateway` keeps that check exactly where Recipe 1's gateway keeps it: a small local table standing in for "what we last knew the backend to hold." What this recipe actually proves is narrower and still real: the adapter's HTTP-facing shape — the request, the idempotency header, the response parsing — holds up against something that looks like Stripe's real API, not just a friendly fake.
 
 ## Connecting a real MCP client
 
